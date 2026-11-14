@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Helpdesk Telcel Trato Compartido / Pyme – Demo</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -44,6 +45,7 @@ const PATHS = {
   alert: <><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></>,
   lock: <><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
   send: <><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></>,
+  download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></>,
   x: <><path d="M18 6 6 18"/><path d="m6 6 12 12"/></>,
   minus: <><path d="M5 12h14"/></>,
   plus: <><path d="M5 12h14"/><path d="M12 5v14"/></>,
@@ -73,8 +75,9 @@ const mk = (id, name, from, subject, min, priority, status, assignee, body, o = 
   const receivedAt = NOW0 - min * 60000;
   const assignedAt = assignee ? receivedAt + (o.wait ?? 5) * 60000 : null;
   const resolvedAt = status === 'resolved' ? assignedAt + (o.res ?? 20) * 60000 : null;
+  const firstReplyAt = (status === 'resolved' || status === 'in_progress') && assignedAt ? assignedAt + (o.fr ?? Math.min(o.res ?? 20, 8)) * 60000 : null;
   const files = o.attach ? (o.files || [{ name: 'adjunto.pdf', size: 204800 }]) : [];
-  return { id, name, from, subject, priority, status, assignee, body, attach: files.length > 0, files, replies: [], receivedAt, assignedAt, resolvedAt };
+  return { id, name, from, subject, priority, status, assignee, body, attach: files.length > 0, files, replies: [], receivedAt, assignedAt, firstReplyAt, resolvedAt };
 };
 
 const HIST_SUBJ = ['Cambio de titular del contrato', 'Reporte de falla en internet en casa', 'Solicitud de factura duplicada', 'Configuración de APN corporativo', 'Reubicación de servicio', 'Consulta de consumo del mes', 'Restablecer contraseña del portal'];
@@ -413,113 +416,347 @@ function Detail({ e, now, view, mode, meId, capacity, emails, presence, authorNa
   );
 }
 
-/* ---------- Métricas (supervisor) ---------- */
-function Metrics({ emails, now, settings, presence, onOpen }) {
-  const total = emails.length;
-  const unassigned = emails.filter(e => e.status === 'unassigned');
-  const active = emails.filter(isOpen);
-  const resolved = emails.filter(e => e.status === 'resolved');
-  const waits = emails.filter(e => e.assignedAt).map(e => mins(e.assignedAt - e.receivedAt));
-  const ress = resolved.map(e => mins(e.resolvedAt - e.assignedAt));
-  const late = unassigned.filter(e => mins(now - e.receivedAt) >= settings.slaMin).sort((a, b) => a.receivedAt - b.receivedAt);
-  const withinSla = emails.filter(e => e.assignedAt && mins(e.assignedAt - e.receivedAt) <= settings.slaMin).length;
-  const sla = (waits.length + late.length) ? Math.round(withinSla / (waits.length + late.length) * 100) : 100;
+/* ---------- Estadísticas y exportación ---------- */
+const pad2 = (n) => String(n).padStart(2, '0');
+const fmtDT = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+const dayKey = (t) => fmtDT(t).slice(0, 10);
+const m = (ms) => ms / 60000;
+const avgOf = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+const fmtAvg = (v) => v == null ? '—' : fmtMin(Math.round(v));
+const r1 = (x) => x == null ? '' : Math.round(x * 10) / 10;
 
+function computeStats(list, slaMin, now) {
+  const resolved = list.filter(e => e.status === 'resolved');
+  const waits = list.filter(e => e.assignedAt).map(e => m(e.assignedAt - e.receivedAt));
+  const firsts = list.filter(e => e.firstReplyAt).map(e => m(e.firstReplyAt - e.receivedAt));
+  const handling = resolved.filter(e => e.assignedAt && e.resolvedAt).map(e => m(e.resolvedAt - e.assignedAt));
+  const unassigned = list.filter(e => e.status === 'unassigned');
+  const lateNow = unassigned.filter(e => m(now - e.receivedAt) >= slaMin).sort((a, b) => a.receivedAt - b.receivedAt);
+  const within = list.filter(e => e.assignedAt && m(e.assignedAt - e.receivedAt) <= slaMin).length;
+  const base = waits.length + lateNow.length;
+  return {
+    received: list.length, resolved: resolved.length, unassigned: unassigned.length, active: list.filter(isOpen).length,
+    resolvedPct: list.length ? Math.round(resolved.length / list.length * 100) : 0,
+    avgWait: avgOf(waits), avgFirst: avgOf(firsts), avgHandling: avgOf(handling),
+    maxWaitNow: unassigned.length ? Math.max(...unassigned.map(e => m(now - e.receivedAt))) : 0,
+    sla: base ? Math.round(within / base * 100) : 100, lateNow,
+  };
+}
+function advisorStats(list) {
+  return ADVISORS.map(a => {
+    const mine = list.filter(e => e.assignee === a.id);
+    const res = mine.filter(e => e.status === 'resolved');
+    return { a, assigned: mine.length, resolved: res.length,
+      avgHandling: avgOf(res.filter(e => e.assignedAt && e.resolvedAt).map(e => m(e.resolvedAt - e.assignedAt))),
+      avgFirst: avgOf(mine.filter(e => e.firstReplyAt).map(e => m(e.firstReplyAt - e.receivedAt))) };
+  });
+}
+
+/* Datos de demostración de meses completos (en producción salen de Firestore) */
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function genMonth(year, month, startTodayMs) {
+  const rnd = mulberry32(year * 100 + month + 7);
+  const dim = new Date(year, month + 1, 0).getDate();
+  const out = []; let id = 1000000 + year * 100 + month;
+  for (let d = 1; d <= dim; d++) {
+    if (new Date(year, month, d).getTime() >= startTodayMs) break;
+    const dow = new Date(year, month, d).getDay();
+    const base = dow === 0 ? 6 : dow === 6 ? 18 : 40;
+    const n = Math.round(base + rnd() * base * 0.5);
+    for (let i = 0; i < n; i++) {
+      const hour = 7 + Math.floor(rnd() * 12);
+      const received = new Date(year, month, d, hour, Math.floor(rnd() * 60), Math.floor(rnd() * 60)).getTime();
+      const r = rnd(); const priority = r < 0.2 ? 'alta' : r < 0.65 ? 'media' : 'baja';
+      const wait = (priority === 'alta' ? 1 : 3) + rnd() * (priority === 'alta' ? 8 : 22);
+      const assignedAt = received + wait * 60000;
+      const firstReplyAt = assignedAt + (3 + rnd() * 22) * 60000;
+      const ok = rnd() < 0.94;
+      out.push({ id: id++, name: HIST_CO[Math.floor(rnd() * HIST_CO.length)], from: '', subject: HIST_SUBJ[Math.floor(rnd() * HIST_SUBJ.length)],
+        priority, status: ok ? 'resolved' : 'in_progress', assignee: ADVISORS[Math.floor(rnd() * 9)].id,
+        receivedAt: received, assignedAt, firstReplyAt, resolvedAt: ok ? firstReplyAt + (8 + rnd() * 50) * 60000 : null, replies: [], files: [] });
+    }
+  }
+  return out;
+}
+
+async function saveFile(filename, data, mime) {
+  try {
+    if (window.claude && window.claude.use) {
+      const dl = await window.claude.use('downloads');
+      if (dl) { await dl.save({ filename, data: typeof data === 'string' ? data : data.slice(0) }); return 'ok'; }
+    }
+  } catch (err) { if (err && err.code === 'declined') return 'declined'; }
+  try {
+    const url = URL.createObjectURL(new Blob([data], { type: mime }));
+    const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    return 'ok';
+  } catch (_) { return 'error'; }
+}
+
+function buildSheets(label, data, stats, advRows, slaMin) {
+  const days = {};
+  data.forEach(e => { (days[dayKey(e.receivedAt)] = days[dayKey(e.receivedAt)] || []).push(e); });
+  const dayRows = Object.keys(days).sort().map(k => { const st = computeStats(days[k], slaMin, Date.now()); return [k, st.received, st.resolved, r1(st.avgWait), r1(st.avgFirst), r1(st.avgHandling)]; });
+  const resumen = [
+    ['Reporte mensual de correos'], ['Campaña', 'Telcel Trato Compartido / Pyme'], ['Mes', label], ['Generado', fmtDT(Date.now())], ['SLA de asignación (min)', slaMin], [],
+    ['Métrica', 'Valor'],
+    ['Correos recibidos', stats.received], ['Correos resueltos', stats.resolved], ['Tasa de resolución (%)', stats.resolvedPct],
+    ['Espera promedio hasta asignar (min)', r1(stats.avgWait)], ['Primera respuesta promedio (min)', r1(stats.avgFirst)],
+    ['Tiempo de atención promedio (min)', r1(stats.avgHandling)], ['Asignados dentro de SLA (%)', stats.sla], [],
+    ['Nota: datos de demostración generados automáticamente.'],
+  ];
+  const asesor = [['Asesor', 'Casos asignados', 'Resueltos', 'Atención prom. (min)', '1ª respuesta prom. (min)'],
+    ...advRows.map(r => [r.a.name, r.assigned, r.resolved, r1(r.avgHandling), r1(r.avgFirst)])];
+  const dia = [['Día', 'Recibidos', 'Resueltos', 'Espera prom. (min)', '1ª respuesta prom. (min)', 'Atención prom. (min)'], ...dayRows];
+  const detalle = [['Recibido', 'Remitente', 'Asunto', 'Prioridad', 'Asesor', 'Estado', 'Espera (min)', '1ª respuesta (min)', 'Atención (min)', 'Dentro de SLA'],
+    ...[...data].sort((a, b) => a.receivedAt - b.receivedAt).map(e => [
+      fmtDT(e.receivedAt), e.name, e.subject, e.priority, e.assignee ? advisorById(e.assignee).name : '', STATUS[e.status].label,
+      e.assignedAt ? r1(m(e.assignedAt - e.receivedAt)) : '', e.firstReplyAt ? r1(m(e.firstReplyAt - e.receivedAt)) : '',
+      e.assignedAt && e.resolvedAt ? r1(m(e.resolvedAt - e.assignedAt)) : '',
+      e.assignedAt ? (m(e.assignedAt - e.receivedAt) <= slaMin ? 'Sí' : 'No') : ''])];
+  return [['Resumen', resumen, [38, 34]], ['Por asesor', asesor, [22, 16, 12, 20, 24]], ['Por día', dia, [12, 12, 12, 18, 24, 20]],
+          ['Detalle', detalle, [17, 28, 46, 11, 20, 12, 13, 17, 14, 13]]];
+}
+const toCsv = (sheets) => '﻿' + sheets.map(([n, rows]) => [n, ...rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n')).join('\n\n');
+
+/* ---------- Métricas (supervisor) ---------- */
+function Bars({ data, labels, color = 'bg-sky-400/80', height = 'h-32', showValues = false }) {
+  const max = Math.max(1, ...data);
+  return (
+    <div className={`flex ${height} items-end gap-1`}>
+      {data.map((n, i) => (
+        <div key={i} title={`${labels[i]}: ${n}`} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
+          {showValues && <span className="text-[10px] font-medium text-slate-500">{n}</span>}
+          <div className={`w-full rounded-t ${color}`} style={{ height: `${(n / max) * 100}%`, minHeight: n ? 3 : 1 }} />
+          <span className="h-3 text-[9px] leading-3 text-slate-400">{labels[i]}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Metrics({ emails, now, settings, presence, onOpen, flash }) {
+  const [sub, setSub] = useState('rt');
+  const [mi, setMi] = useState(0);
+  const months = useMemo(() => {
+    const b = new Date();
+    return [0, 1, 2].map(i => { const d = new Date(b.getFullYear(), b.getMonth() - i, 1);
+      return { y: d.getFullYear(), m: d.getMonth(), label: d.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' }) }; });
+  }, []);
+  const sel = months[mi];
+
+  const monthData = useMemo(() => {
+    const st = new Date(); st.setHours(0, 0, 0, 0);
+    const cur = sel.y === st.getFullYear() && sel.m === st.getMonth();
+    const base = genMonth(sel.y, sel.m, st.getTime());
+    return cur ? [...base, ...emails.filter(e => e.receivedAt >= st.getTime())] : base;
+  }, [emails, mi]);
+
+  const rt = useMemo(() => computeStats(emails, settings.slaMin, now), [emails, settings.slaMin, now]);
+  const ms = useMemo(() => computeStats(monthData, settings.slaMin, now), [monthData, settings.slaMin, now]);
+  const rtAdv = useMemo(() => advisorStats(emails), [emails]);
+  const mAdv = useMemo(() => advisorStats(monthData).sort((a, b) => b.resolved - a.resolved), [monthData]);
+
+  /* tiempo real */
   const hours = Array(8).fill(0);
   emails.forEach(e => { const h = Math.floor((now - e.receivedAt) / 3600000); if (h >= 0 && h < 8) hours[7 - h]++; });
-  const maxH = Math.max(1, ...hours);
-
   const prio = ['alta', 'media', 'baja'].map(p => ({ p, n: emails.filter(e => e.status !== 'resolved' && e.priority === p).length }));
   const maxP = Math.max(1, ...prio.map(x => x.n));
   const PCOLOR = { alta: 'bg-rose-400', media: 'bg-amber-400', baja: 'bg-slate-400' };
+  const availCount = ADVISORS.filter(a => (presence[a.id]?.s || 'available') === 'available').length;
+  const occ = availCount ? Math.round(emails.filter(isOpen).length / (availCount * settings.capacity) * 100) : null;
+
+  /* mensual */
+  const dim = new Date(sel.y, sel.m + 1, 0).getDate();
+  const perDay = Array(dim).fill(0); monthData.forEach(e => { perDay[new Date(e.receivedAt).getDate() - 1]++; });
+  const perHour = Array(24).fill(0); monthData.forEach(e => { perHour[new Date(e.receivedAt).getHours()]++; });
+  const hrs = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+  const monthPrio = ['alta', 'media', 'baja'].map(p => ({ p, n: monthData.filter(e => e.priority === p).length }));
+  const maxMP = Math.max(1, ...monthPrio.map(x => x.n));
+
+  const doExport = async (fmt) => {
+    const sheets = buildSheets(sel.label, monthData, ms, mAdv, settings.slaMin);
+    const fname = `metricas_trato-compartido_${sel.y}-${pad2(sel.m + 1)}`;
+    let res;
+    if (fmt === 'xlsx' && window.XLSX) {
+      const wb = XLSX.utils.book_new();
+      sheets.forEach(([name, rows, widths]) => { const ws = XLSX.utils.aoa_to_sheet(rows); ws['!cols'] = widths.map(w => ({ wch: w })); XLSX.utils.book_append_sheet(wb, ws, name); });
+      res = await saveFile(`${fname}.xlsx`, XLSX.write(wb, { bookType: 'xlsx', type: 'array' }), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } else {
+      res = await saveFile(`${fname}.csv`, toCsv(sheets), 'text/csv;charset=utf-8');
+    }
+    flash(res === 'ok' ? `Reporte de ${sel.label} exportado` : res === 'declined' ? 'Exportación cancelada' : 'No se pudo exportar el archivo');
+  };
+
+  const SubBtn = ({ k, children }) => (
+    <button onClick={() => setSub(k)} className={`rounded-md px-3 py-1.5 font-medium transition ${sub === k ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{children}</button>
+  );
+  const Th = ({ children, cls = '' }) => <th className={`px-3 py-2 font-medium ${cls}`}>{children}</th>;
 
   return (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto scroll-thin pr-1">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-6">
-        <Kpi icon="mail" label="Recibidos (8 h)" value={total} tone="bg-slate-100 text-slate-600" />
-        <Kpi icon="inbox" label="Sin asignar" value={unassigned.length} tone="bg-slate-100 text-slate-600" />
-        <Kpi icon="clock" label="En atención" value={active.length} tone="bg-sky-50 text-sky-600" />
-        <Kpi icon="check" label="Resueltos" value={resolved.length} tone="bg-emerald-50 text-emerald-600" />
-        <Kpi icon="zap" label="Espera prom. a asignar" value={fmtMin(avg(waits))} tone="bg-amber-50 text-amber-600" />
-        <Kpi icon="shield" label={`Dentro de SLA (${settings.slaMin} min)`} value={`${sla}%`} tone={sla >= 90 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'} sub={`Resolución prom. ${fmtMin(avg(ress))}`} />
+      {/* Barra: pestañas + mes + exportar */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex rounded-lg bg-slate-200/70 p-0.5 text-sm"><SubBtn k="rt">En tiempo real</SubBtn><SubBtn k="month">Reporte mensual</SubBtn></div>
+        {sub === 'rt' && (
+          <span className="flex items-center gap-2 text-xs text-slate-500">
+            <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
+            Actualizado {new Date(now).toLocaleTimeString('es-MX')}
+          </span>
+        )}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <select value={mi} onChange={(e) => setMi(Number(e.target.value))} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm capitalize text-slate-700">
+            {months.map((mo, i) => <option key={i} value={i}>{mo.label}</option>)}
+          </select>
+          <button onClick={() => doExport('xlsx')} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700">
+            <Icon name="download" size={15} />Exportar Excel
+          </button>
+          <button onClick={() => doExport('csv')} className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+            <Icon name="download" size={14} />CSV
+          </button>
+        </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-          <h3 className="text-sm font-semibold text-slate-800">Correos recibidos por hora</h3>
-          <div className="mt-4 flex h-36 items-end gap-2">
-            {hours.map((n, i) => (
-              <div key={i} className="flex flex-1 flex-col items-center justify-end gap-1">
-                <span className="text-[11px] font-medium text-slate-500">{n}</span>
-                <div className="w-full rounded-t-md bg-sky-400/80" style={{ height: `${(n / maxH) * 100}%`, minHeight: n ? 4 : 2 }} />
-                <span className="text-[10px] text-slate-400">{i === 7 ? 'ahora' : `-${7 - i}h`}</span>
-              </div>
-            ))}
+      {sub === 'rt' && (<>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <Kpi icon="mail" label="Recibidos hoy" value={rt.received} tone="bg-slate-100 text-slate-600" />
+          <Kpi icon="inbox" label="Sin asignar" value={rt.unassigned} sub={rt.unassigned ? `Más antiguo: ${fmtMin(Math.round(rt.maxWaitNow))}` : 'Cola vacía'} tone="bg-slate-100 text-slate-600" />
+          <Kpi icon="clock" label="En atención" value={rt.active} tone="bg-sky-50 text-sky-600" />
+          <Kpi icon="check" label="Resueltos hoy" value={rt.resolved} sub={`Tasa de resolución ${rt.resolvedPct}%`} tone="bg-emerald-50 text-emerald-600" />
+          <Kpi icon="users" label="Ocupación del equipo" value={occ == null ? '—' : `${occ}%`} sub={`${availCount} de ${ADVISORS.length} disponibles`} tone="bg-violet-50 text-violet-600" />
+          <Kpi icon="zap" label="Espera prom. hasta asignar" value={fmtAvg(rt.avgWait)} tone="bg-amber-50 text-amber-600" />
+          <Kpi icon="send" label="1ª respuesta prom." value={fmtAvg(rt.avgFirst)} sub="Desde que llega el correo" tone="bg-sky-50 text-sky-600" />
+          <Kpi icon="headset" label="Atención prom." value={fmtAvg(rt.avgHandling)} sub="Desde asignado hasta resuelto" tone="bg-emerald-50 text-emerald-600" />
+          <Kpi icon="alert" label="Fuera de SLA ahora" value={rt.lateNow.length} sub={`Límite ${settings.slaMin} min`} tone={rt.lateNow.length ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'} />
+          <Kpi icon="shield" label="Asignados dentro de SLA" value={`${rt.sla}%`} tone={rt.sla >= 90 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'} />
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-3">
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+            <h3 className="text-sm font-semibold text-slate-800">Correos recibidos por hora (últimas 8 h)</h3>
+            <div className="mt-4"><Bars data={hours} labels={hours.map((_, i) => i === 7 ? 'ahora' : `-${7 - i}h`)} showValues /></div>
+          </section>
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-slate-800">Abiertos por prioridad</h3>
+            <div className="mt-4 space-y-3">
+              {prio.map(({ p, n }) => (
+                <div key={p}>
+                  <div className="flex justify-between text-xs"><span className="capitalize text-slate-600">{p}</span><span className="font-medium text-slate-700">{n}</span></div>
+                  <div className="mt-1 h-2 rounded-full bg-slate-100"><div className={`h-2 rounded-full ${PCOLOR[p]}`} style={{ width: `${(n / maxP) * 100}%` }} /></div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        {rt.lateNow.length > 0 && (
+          <section className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-rose-800"><Icon name="alert" size={15} />{rt.lateNow.length} correo(s) esperando más de {settings.slaMin} min</h3>
+            <div className="mt-2 divide-y divide-rose-100">
+              {rt.lateNow.map(e => (
+                <button key={e.id} onClick={() => onOpen(e.id)} className="flex w-full items-center justify-between gap-3 py-2 text-left text-sm hover:text-rose-900">
+                  <span className="truncate text-slate-700">{e.name} — {e.subject}</span>
+                  <span className="shrink-0 text-xs font-semibold text-rose-600">{fmtMin(mins(now - e.receivedAt))}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+            <span className="text-sm font-semibold text-slate-800">Equipo en este momento</span>
+            <div className="flex flex-wrap gap-1.5">
+              {Object.entries(PRESENCE).map(([k, pr]) => (
+                <Badge key={k} cls={pr.cls}>{pr.label}: {ADVISORS.filter(a => (presence[a.id]?.s || 'available') === k).length}</Badge>
+              ))}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left text-xs text-slate-500">
+                <tr><Th cls="px-4">Asesor</Th><Th>Estatus</Th><Th>Abiertos</Th><Th>Resueltos hoy</Th><Th>Atención prom.</Th><Th>1ª respuesta prom.</Th><Th cls="px-4">Carga</Th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {rtAdv.map(r => {
+                  const a = r.a; const o = openCount(emails, a.id);
+                  const ps = presence[a.id]?.s || 'available';
+                  const st = ps !== 'available' ? [`${PRESENCE[ps].label} · ${fmtMin(mins(now - presence[a.id].since))}`, PRESENCE[ps].cls] : o >= settings.capacity ? ['Al límite', 'bg-amber-50 text-amber-700 ring-amber-200'] : ['Disponible', 'bg-emerald-50 text-emerald-700 ring-emerald-200'];
+                  return (
+                    <tr key={a.id} className="hover:bg-slate-50/60">
+                      <td className="px-4 py-2.5"><div className="flex items-center gap-2"><Avatar advisor={a} /><span className="font-medium text-slate-800">{a.name}</span></div></td>
+                      <td className="px-3 py-2.5"><Badge cls={st[1]}>{st[0]}</Badge></td>
+                      <td className="px-3 py-2.5 text-slate-700">{o} / {settings.capacity}</td>
+                      <td className="px-3 py-2.5 text-slate-700">{r.resolved}</td>
+                      <td className="px-3 py-2.5 text-slate-700">{fmtAvg(r.avgHandling)}</td>
+                      <td className="px-3 py-2.5 text-slate-700">{fmtAvg(r.avgFirst)}</td>
+                      <td className="px-4 py-2.5"><div className="h-1.5 w-28 rounded-full bg-slate-100"><div className={`h-1.5 rounded-full ${a.color}`} style={{ width: `${Math.min(100, (o / settings.capacity) * 100)}%` }} /></div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </section>
+      </>)}
+
+      {sub === 'month' && (<>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+          <Kpi icon="mail" label="Recibidos" value={ms.received} tone="bg-slate-100 text-slate-600" />
+          <Kpi icon="check" label="Resueltos" value={ms.resolved} sub={`Tasa ${ms.resolvedPct}%`} tone="bg-emerald-50 text-emerald-600" />
+          <Kpi icon="zap" label="Espera prom." value={fmtAvg(ms.avgWait)} tone="bg-amber-50 text-amber-600" />
+          <Kpi icon="send" label="1ª respuesta prom." value={fmtAvg(ms.avgFirst)} tone="bg-sky-50 text-sky-600" />
+          <Kpi icon="headset" label="Atención prom." value={fmtAvg(ms.avgHandling)} tone="bg-emerald-50 text-emerald-600" />
+          <Kpi icon="shield" label={`Dentro de SLA (${settings.slaMin} min)`} value={`${ms.sla}%`} tone={ms.sla >= 90 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'} />
+        </div>
 
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <h3 className="text-sm font-semibold text-slate-800">Abiertos por prioridad</h3>
-          <div className="mt-4 space-y-3">
-            {prio.map(({ p, n }) => (
-              <div key={p}>
-                <div className="flex justify-between text-xs"><span className="capitalize text-slate-600">{p}</span><span className="font-medium text-slate-700">{n}</span></div>
-                <div className="mt-1 h-2 rounded-full bg-slate-100"><div className={`h-2 rounded-full ${PCOLOR[p]}`} style={{ width: `${(n / maxP) * 100}%` }} /></div>
-              </div>
-            ))}
-          </div>
+          <h3 className="text-sm font-semibold capitalize text-slate-800">Correos recibidos por día · {sel.label}</h3>
+          <div className="mt-4"><Bars data={perDay} labels={perDay.map((_, i) => (i + 1) % 5 === 0 || i === 0 ? String(i + 1) : '')} height="h-36" /></div>
         </section>
-      </div>
 
-      {late.length > 0 && (
-        <section className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-rose-800"><Icon name="alert" size={15} />{late.length} correo(s) esperando más de {settings.slaMin} min</h3>
-          <div className="mt-2 divide-y divide-rose-100">
-            {late.map(e => (
-              <button key={e.id} onClick={() => onOpen(e.id)} className="flex w-full items-center justify-between gap-3 py-2 text-left text-sm hover:text-rose-900">
-                <span className="truncate text-slate-700">{e.name} — {e.subject}</span>
-                <span className="shrink-0 text-xs font-semibold text-rose-600">{fmtMin(mins(now - e.receivedAt))}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
-          <span className="text-sm font-semibold text-slate-800">Rendimiento por asesor</span>
-          <div className="flex flex-wrap gap-1.5">
-            {Object.entries(PRESENCE).map(([k, pr]) => (
-              <Badge key={k} cls={pr.cls}>{pr.label}: {ADVISORS.filter(a => (presence[a.id]?.s || 'available') === k).length}</Badge>
-            ))}
-          </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+            <h3 className="text-sm font-semibold text-slate-800">Horas con más correos</h3>
+            <div className="mt-4"><Bars data={hrs.map(h => perHour[h])} labels={hrs.map(h => `${h}h`)} color="bg-violet-400/80" /></div>
+          </section>
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-slate-800">Recibidos por prioridad</h3>
+            <div className="mt-4 space-y-3">
+              {monthPrio.map(({ p, n }) => (
+                <div key={p}>
+                  <div className="flex justify-between text-xs"><span className="capitalize text-slate-600">{p}</span><span className="font-medium text-slate-700">{n}</span></div>
+                  <div className="mt-1 h-2 rounded-full bg-slate-100"><div className={`h-2 rounded-full ${PCOLOR[p]}`} style={{ width: `${(n / maxMP) * 100}%` }} /></div>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs text-slate-500">
-              <tr><th className="px-4 py-2 font-medium">Asesor</th><th className="px-3 py-2 font-medium">Estado</th><th className="px-3 py-2 font-medium">Abiertos</th><th className="px-3 py-2 font-medium">Resueltos</th><th className="px-3 py-2 font-medium">Resolución prom.</th><th className="px-4 py-2 font-medium">Carga</th></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {ADVISORS.map(a => {
-                const o = openCount(emails, a.id);
-                const r = resolved.filter(e => e.assignee === a.id);
-                const ps = presence[a.id]?.s || 'available';
-                const st = ps !== 'available' ? [`${PRESENCE[ps].label} · ${fmtMin(mins(now - presence[a.id].since))}`, PRESENCE[ps].cls] : o >= settings.capacity ? ['Al límite', 'bg-amber-50 text-amber-700 ring-amber-200'] : ['Disponible', 'bg-emerald-50 text-emerald-700 ring-emerald-200'];
-                return (
-                  <tr key={a.id} className="hover:bg-slate-50/60">
-                    <td className="px-4 py-2.5"><div className="flex items-center gap-2"><Avatar advisor={a} /><span className="font-medium text-slate-800">{a.name}</span></div></td>
-                    <td className="px-3 py-2.5"><Badge cls={st[1]}>{st[0]}</Badge></td>
-                    <td className="px-3 py-2.5 text-slate-700">{o} / {settings.capacity}</td>
-                    <td className="px-3 py-2.5 text-slate-700">{r.length}</td>
-                    <td className="px-3 py-2.5 text-slate-700">{r.length ? fmtMin(avg(r.map(e => mins(e.resolvedAt - e.assignedAt)))) : '—'}</td>
-                    <td className="px-4 py-2.5"><div className="h-1.5 w-28 rounded-full bg-slate-100"><div className={`h-1.5 rounded-full ${a.color}`} style={{ width: `${Math.min(100, (o / settings.capacity) * 100)}%` }} /></div></td>
+
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-800">Desempeño por asesor</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left text-xs text-slate-500">
+                <tr><Th cls="px-4">Asesor</Th><Th>Casos asignados</Th><Th>Resueltos</Th><Th>Atención prom.</Th><Th>1ª respuesta prom.</Th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {mAdv.map(r => (
+                  <tr key={r.a.id} className="hover:bg-slate-50/60">
+                    <td className="px-4 py-2.5"><div className="flex items-center gap-2"><Avatar advisor={r.a} /><span className="font-medium text-slate-800">{r.a.name}</span></div></td>
+                    <td className="px-3 py-2.5 text-slate-700">{r.assigned}</td>
+                    <td className="px-3 py-2.5 text-slate-700">{r.resolved}</td>
+                    <td className="px-3 py-2.5 text-slate-700">{fmtAvg(r.avgHandling)}</td>
+                    <td className="px-3 py-2.5 text-slate-700">{fmtAvg(r.avgFirst)}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <p className="text-[11px] text-slate-400">El Excel incluye 4 hojas: Resumen, Por asesor, Por día y Detalle de cada correo. Los meses anteriores son datos de demostración.</p>
+      </>)}
     </div>
   );
 }
@@ -627,7 +864,7 @@ function App() {
     flash(`${advisorById(id).name}: ${PRESENCE[s].label}`);
   };
 
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 15000); return () => clearInterval(t); }, []);
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 10000); return () => clearInterval(t); }, []);
 
   // Motor automático: corre cada vez que cambian correos, ajustes o disponibilidad
   useEffect(() => {
@@ -651,7 +888,7 @@ function App() {
   const sendReply = (id, body, files, resolve) => {
     const author = view === 'asesor' ? me.name : 'Supervisor';
     setEmails(prev => prev.map(e => e.id !== id ? e : {
-      ...e, replies: [...(e.replies || []), { id: Date.now(), author, at: Date.now(), body, files }],
+      ...e, firstReplyAt: e.firstReplyAt || Date.now(), replies: [...(e.replies || []), { id: Date.now(), author, at: Date.now(), body, files }],
       status: resolve ? 'resolved' : (e.status === 'assigned' ? 'in_progress' : e.status),
       resolvedAt: resolve ? Date.now() : e.resolvedAt }));
     setDrafts(d => { const n = { ...d }; delete n[id]; return n; });
@@ -821,7 +1058,7 @@ function App() {
                 <div className="min-h-0 lg:col-span-7">{detail}</div>
               </div>
             )}
-            {tab === 'metricas' && <Metrics emails={emails} now={now} settings={settings} presence={presence} onOpen={openFromMetrics} />}
+            {tab === 'metricas' && <Metrics emails={emails} now={now} settings={settings} presence={presence} onOpen={openFromMetrics} flash={flash} />}
             {tab === 'config' && <Config settings={settings} setSettings={setSettings} presence={presence} onPresence={setPresenceOf} onMode={setMode} />}
           </main>
         </>

@@ -21,6 +21,8 @@ const PATHS = {
   play: <><polygon points="6 3 20 12 6 21 6 3"/></>,
   alert: <><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></>,
   lock: <><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
+  sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></>,
+  moon: <><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></>,
   pencil: <><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></>,
   send: <><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></>,
   download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></>,
@@ -168,7 +170,7 @@ function Toggle({ on, onChange, label }) {
   return (
     <button role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}
       className={`relative h-5 w-9 shrink-0 rounded-full transition ${on ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-      <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${on ? 'left-[18px]' : 'left-0.5'}`} />
+      <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${on ? 'left-[18px]' : 'left-0.5'}`} style={{ background: '#fff' }} />
     </button>
   );
 }
@@ -201,7 +203,7 @@ function Row({ e, now, onClick, slaMin, hasDraft }) {
   const waited = e.status === 'unassigned' ? mins(now - e.receivedAt) : 0;
   const late = e.status === 'unassigned' && waited >= slaMin;
   const preview = (e.body || '').replace(/\s+/g, ' ').slice(0, 150);
-  const nReplies = (e.replies || []).length;
+  const nReplies = (e.replies || []).filter(r => !r.auto).length;
   return (
     <div onClick={onClick} role="button" tabIndex={0} onKeyDown={(ev) => { if (ev.key === 'Enter') onClick(); }}
       className={`cursor-pointer border-l-[3px] px-5 py-3.5 transition hover:bg-slate-50 ${late ? 'border-rose-400' : 'border-transparent'}`}>
@@ -228,12 +230,19 @@ function Row({ e, now, onClick, slaMin, hasDraft }) {
 const BLOCKED_EXT = ['exe', 'bat', 'cmd', 'msi', 'js', 'vbs', 'scr', 'com', 'jar'];
 const MAX_FILE = 10 * 1024 * 1024, MAX_TOTAL = 20 * 1024 * 1024;
 const fmtSize = (b) => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
-const TEMPLATES = [
-  ['Saludo y solicitud de datos', (n, a) => `Buen día, ${n}.\n\nGracias por contactar a Soporte Telcel Trato Compartido / Pyme. Para ayudarle necesitamos que nos confirme el número de línea o folio y una breve descripción de la falla.\n\nQuedamos atentos.\n\nSaludos cordiales,\n${a}`],
-  ['Reinicio del equipo', (n, a) => `Buen día, ${n}.\n\nLe pedimos reiniciar el módem: desconéctelo de la corriente 30 segundos, vuelva a conectarlo y espere unos 3 minutos. Si la falla continúa, responda a este correo con una foto de las luces del equipo.\n\nSaludos cordiales,\n${a}`],
-  ['Caso escalado', (n, a) => `Buen día, ${n}.\n\nSu caso fue escalado al área técnica. Le daremos seguimiento por este mismo medio en cuanto tengamos novedades.\n\nSaludos cordiales,\n${a}`],
-  ['Cierre del caso', (n, a) => `Buen día, ${n}.\n\nDamos por atendido su caso. Si necesita algo más, responda a este correo y con gusto le ayudamos.\n\nSaludos cordiales,\n${a}`],
+const renderTemplate = (text, vars) => String(text || '').replace(/\{(\w+)\}/g, (all, k) => (vars[k] !== undefined ? vars[k] : all));
+const folioOf = (e) => e.folio || 'TC-' + String(e.id).slice(-5).padStart(5, '0');
+const DEFAULT_TEMPLATES = [
+  { id: 't1', name: 'Saludo y solicitud de datos', body: 'Buen día, {cliente}.\n\nGracias por contactar a Soporte Telcel Trato Compartido / Pyme. Para ayudarle necesitamos que nos confirme el número de línea o folio y una breve descripción de la falla.\n\nQuedamos atentos.\n\nSaludos cordiales,\n{asesor}' },
+  { id: 't2', name: 'Reinicio del equipo', body: 'Buen día, {cliente}.\n\nLe pedimos reiniciar el módem: desconéctelo de la corriente 30 segundos, vuelva a conectarlo y espere unos 3 minutos. Si la falla continúa, responda a este correo con una foto de las luces del equipo.\n\nSaludos cordiales,\n{asesor}' },
+  { id: 't3', name: 'Caso escalado', body: 'Buen día, {cliente}.\n\nSu caso {folio} fue escalado al área técnica. Le daremos seguimiento por este mismo medio en cuanto tengamos novedades.\n\nSaludos cordiales,\n{asesor}' },
+  { id: 't4', name: 'Cierre del caso', body: 'Buen día, {cliente}.\n\nDamos por atendido su caso {folio}. Si necesita algo más, responda a este correo y con gusto le ayudamos.\n\nSaludos cordiales,\n{asesor}' },
 ];
+const DEFAULT_AUTOREPLY = {
+  enabled: true,
+  subject: 'Recibimos su correo · Folio {folio}',
+  body: 'Buen día, {cliente}.\n\nHemos recibido su correo con el asunto «{asunto}» y quedó registrado con el folio {folio}. Un asesor de Soporte Telcel Trato Compartido / Pyme lo atenderá a la brevedad.\n\nEste es un mensaje automático, por favor no lo responda.\n\nSaludos cordiales,\nSoporte Telcel Trato Compartido / Pyme',
+};
 function FileChip({ f, onRemove }) {
   return (
     <span className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700">
@@ -246,7 +255,7 @@ function FileChip({ f, onRemove }) {
 }
 
 /* ---------- Ventana del correo (borrador / enviados) ---------- */
-function EmailWindow({ e, now, view, mode, meId, capacity, emails, presence, authorName, draft, onDraft, onSend, onFlash, onAssign, onRelease, onStatus, onClose }) {
+function EmailWindow({ e, now, view, mode, meId, capacity, emails, presence, templates, authorName, draft, onDraft, onSend, onFlash, onAssign, onRelease, onStatus, onClose }) {
   const mine = e.assignee === meId;
   const adv = e.assignee && advisorById(e.assignee);
   const canReply = !!e.assignee && ((view === 'asesor' && mine) || view === 'supervisor');
@@ -336,8 +345,8 @@ function EmailWindow({ e, now, view, mode, meId, capacity, emails, presence, aut
         </div>
 
         {/* Cuerpo: original a la izquierda, borrador / enviados a la derecha */}
-        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-5">
-          <div className="scroll-thin max-h-[30vh] min-h-0 overflow-y-auto border-b border-slate-200 p-5 lg:col-span-2 lg:max-h-none lg:border-b-0 lg:border-r">
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          <div className="scroll-thin max-h-[26vh] shrink-0 overflow-y-auto border-b border-slate-200 p-5 lg:max-h-none lg:w-[38%] lg:border-b-0 lg:border-r">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Correo original</div>
             <div className="mb-3 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-400">
               <span>Recibido {ago(e.receivedAt, now)}</span>
@@ -348,7 +357,7 @@ function EmailWindow({ e, now, view, mode, meId, capacity, emails, presence, aut
             {(e.files || []).length > 0 && <div className="mt-5 flex flex-wrap gap-2">{e.files.map((f, i) => <FileChip key={i} f={f} />)}</div>}
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col lg:col-span-3">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="flex items-center gap-1 border-b border-slate-200 px-3">
               <button onClick={() => setTab('draft')} className={tabCls(tab === 'draft')}>
                 <Icon name="pencil" size={15} />Borrador
@@ -361,20 +370,21 @@ function EmailWindow({ e, now, view, mode, meId, capacity, emails, presence, aut
             </div>
 
             {tab === 'draft' && (composeOpen ? (
-              <div className="flex min-h-0 flex-1 flex-col p-4" onDragOver={(ev) => ev.preventDefault()} onDrop={(ev) => { ev.preventDefault(); addFiles(ev.dataTransfer.files); }}>
+              <div className="flex min-h-0 flex-1 flex-col" onDragOver={(ev) => ev.preventDefault()} onDrop={(ev) => { ev.preventDefault(); addFiles(ev.dataTransfer.files); }}>
+                <div className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
                 <div className="mb-3 space-y-2 text-sm">
                   <div className="flex items-center gap-2 border-b border-slate-100 pb-2"><span className="w-14 shrink-0 text-xs text-slate-400">Para</span><span className="truncate font-medium text-slate-700">{e.from}</span></div>
                   <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
                     <span className="w-14 shrink-0 text-xs text-slate-400">Asunto</span><span className="min-w-0 flex-1 truncate font-medium text-slate-700">{subject}</span>
-                    <select value="" onChange={(ev) => { const t = TEMPLATES.find(x => x[0] === ev.target.value); if (t) onDraft(e.id, { body: (dr.body ? dr.body + '\n\n' : '') + t[1](e.name, authorName) }); }}
+                    <select value="" onChange={(ev) => { const t = templates.find(x => x.id === ev.target.value); if (t) onDraft(e.id, { body: (dr.body ? dr.body + '\n\n' : '') + renderTemplate(t.body, { cliente: e.name, asesor: authorName, folio: folioOf(e), asunto: e.subject }) }); }}
                       className="shrink-0 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700">
                       <option value="" disabled>Respuesta rápida…</option>
-                      {TEMPLATES.map(([t]) => <option key={t} value={t}>{t}</option>)}
+                      {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                     </select>
                   </div>
                 </div>
                 <textarea value={dr.body} onChange={(ev) => onDraft(e.id, { body: ev.target.value })} placeholder="Escribe tu respuesta…"
-                  className="min-h-[220px] w-full flex-1 resize-none rounded-lg border border-slate-300 bg-white p-4 text-[15px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-300" />
+                  className="min-h-[130px] w-full flex-1 resize-none rounded-lg border border-slate-300 bg-white p-4 text-[15px] leading-relaxed text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-300" />
                 {dr.files.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {dr.files.map((f, i) => <FileChip key={i} f={f} onRemove={() => onDraft(e.id, { files: dr.files.filter((_, j) => j !== i) })} />)}
@@ -387,7 +397,8 @@ function EmailWindow({ e, now, view, mode, meId, capacity, emails, presence, aut
                   </label>
                   <span className="text-[11px] text-slate-400">Máx. 10 MB por archivo y 20 MB en total. También puedes arrastrarlos aquí.</span>
                 </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-200 bg-slate-50/70 px-4 py-3">
                   <span className="flex items-center gap-1.5 text-xs text-slate-500">
                     <Icon name="pencil" size={12} />{hasDraft && dr.savedAt ? `Borrador guardado ${ago(dr.savedAt, now)}` : 'Se guarda solo mientras escribes'}
                   </span>
@@ -418,13 +429,13 @@ function EmailWindow({ e, now, view, mode, meId, capacity, emails, presence, aut
               <div className="scroll-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
                 {replies.length === 0 && <div className="py-10 text-center text-sm text-slate-400">Aún no se ha enviado ninguna respuesta en este caso.</div>}
                 {replies.map(r => (
-                  <div key={r.id} className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
+                  <div key={r.id} className={`rounded-xl border p-4 ${r.auto ? 'border-violet-100 bg-violet-50/40' : 'border-emerald-100 bg-emerald-50/40'}`}>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                      <Badge cls="bg-emerald-50 text-emerald-700 ring-emerald-200"><Icon name="check" size={11} />Enviado</Badge>
+                      <Badge cls={r.auto ? 'bg-violet-50 text-violet-700 ring-violet-200' : 'bg-emerald-50 text-emerald-700 ring-emerald-200'}><Icon name={r.auto ? 'zap' : 'check'} size={11} />{r.auto ? 'Respuesta automática' : 'Enviado'}</Badge>
                       <span className="font-medium text-slate-700">{r.author} → {e.from}</span>
                       <span className="ml-auto">{fmtDT(r.at)} · {ago(r.at, now)}</span>
                     </div>
-                    <div className="mt-2 text-xs text-slate-500">Asunto: <span className="font-medium text-slate-700">{subject}</span></div>
+                    <div className="mt-2 text-xs text-slate-500">Asunto: <span className="font-medium text-slate-700">{r.subject || subject}</span></div>
                     <p className="mt-2 whitespace-pre-line text-[15px] leading-relaxed text-slate-700">{r.body}</p>
                     {r.files.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{r.files.map((f, i) => <FileChip key={i} f={f} />)}</div>}
                   </div>
@@ -784,7 +795,7 @@ function Metrics({ emails, now, settings, presence, onOpen, flash }) {
 }
 
 /* ---------- Configuración (supervisor) ---------- */
-function Config({ settings, setSettings, presence, onPresence, onMode }) {
+function ConfigReparto({ settings, setSettings, presence, onPresence, onMode }) {
   return (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto scroll-thin pr-1">
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -857,8 +868,120 @@ function Config({ settings, setSettings, presence, onPresence, onMode }) {
   );
 }
 
+/* ---------- Respuesta automática y plantillas (supervisor) ---------- */
+const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-300';
+function VarChips({ vars, onInsert }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+      Insertar variable:
+      {vars.map(v => <button key={v} type="button" onClick={() => onInsert(`{${v}}`)} className="rounded-md bg-slate-100 px-2 py-1 font-mono text-slate-600 hover:bg-slate-200">{`{${v}}`}</button>)}
+    </div>
+  );
+}
+
+function ConfigAuto({ autoReply, setAutoReply }) {
+  const set = (patch) => setAutoReply(a => ({ ...a, ...patch }));
+  const sample = { cliente: 'Ferretería El Sol', folio: 'TC-001234', asunto: 'Internet en casa sin servicio' };
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="max-w-xl">
+          <h2 className="text-sm font-semibold text-slate-800">Respuesta automática (acuse de recibo)</h2>
+          <p className="mt-0.5 text-xs text-slate-500">Se envía sola al cliente cuando su correo llega a la bandeja, con su folio. No se manda a correos automáticos, listas de correo ni cuentas «no-reply».</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-medium ${autoReply.enabled ? 'text-emerald-600' : 'text-slate-400'}`}>{autoReply.enabled ? 'Activada' : 'Desactivada'}</span>
+          <Toggle on={autoReply.enabled} label="Respuesta automática" onChange={(v) => set({ enabled: v })} />
+        </div>
+      </div>
+      <div className={`mt-5 grid gap-5 lg:grid-cols-2 ${autoReply.enabled ? '' : 'opacity-60'}`}>
+        <div className="space-y-3">
+          <label className="block text-xs font-medium text-slate-500">Asunto
+            <input value={autoReply.subject} onChange={(e) => set({ subject: e.target.value })} className={inputCls} />
+          </label>
+          <label className="block text-xs font-medium text-slate-500">Mensaje
+            <textarea value={autoReply.body} onChange={(e) => set({ body: e.target.value })} rows={11} className={`${inputCls} resize-y leading-relaxed`} />
+          </label>
+          <VarChips vars={['cliente', 'folio', 'asunto']} onInsert={(v) => set({ body: autoReply.body + v })} />
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <button onClick={() => setAutoReply(DEFAULT_AUTOREPLY)} className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"><Icon name="undo" size={13} />Restablecer texto original</button>
+            <span className="text-[11px] text-slate-400">Los cambios se guardan solos.</span>
+          </div>
+        </div>
+        <div>
+          <div className="text-xs font-medium text-slate-500">Vista previa (con datos de ejemplo)</div>
+          <div className="mt-1 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+            <div className="border-b border-slate-200 pb-2 text-xs text-slate-500">Asunto: <span className="font-medium text-slate-700">{renderTemplate(autoReply.subject, sample)}</span></div>
+            <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-700">{renderTemplate(autoReply.body, sample)}</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ConfigTemplates({ templates, setTemplates }) {
+  const [delId, setDelId] = useState(null);
+  const upd = (id, patch) => setTemplates(ts => ts.map(t => t.id === id ? { ...t, ...patch } : t));
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="max-w-xl">
+          <h2 className="text-sm font-semibold text-slate-800">Plantillas de respuesta rápida</h2>
+          <p className="mt-0.5 text-xs text-slate-500">Aparecen en el menú «Respuesta rápida» cuando un asesor redacta. Variables: <span className="font-mono">{'{cliente} {asesor} {folio} {asunto}'}</span> se llenan solas al insertar.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setTemplates(ts => [...ts, { id: 't' + Date.now(), name: 'Nueva plantilla', body: 'Buen día, {cliente}.\n\n\n\nSaludos cordiales,\n{asesor}' }])}
+            className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700"><Icon name="plus" size={14} />Agregar plantilla</button>
+          <button onClick={() => setTemplates(DEFAULT_TEMPLATES)} className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"><Icon name="undo" size={13} />Restablecer</button>
+        </div>
+      </div>
+      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+        {templates.length === 0 && <div className="col-span-full py-8 text-center text-sm text-slate-400">No hay plantillas. Agrega la primera.</div>}
+        {templates.map(t => (
+          <div key={t.id} className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+            <div className="flex items-center gap-2">
+              <input value={t.name} onChange={(e) => upd(t.id, { name: e.target.value })} placeholder="Nombre de la plantilla" className={`${inputCls} mt-0 font-medium`} />
+              {delId === t.id ? (
+                <span className="flex shrink-0 items-center gap-1 text-xs">
+                  <button onClick={() => { setTemplates(ts => ts.filter(x => x.id !== t.id)); setDelId(null); }} className="rounded-md bg-rose-600 px-2 py-1.5 font-semibold text-white hover:bg-rose-700">Eliminar</button>
+                  <button onClick={() => setDelId(null)} className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-slate-600">No</button>
+                </span>
+              ) : (
+                <button onClick={() => setDelId(t.id)} aria-label={`Eliminar ${t.name}`} className="shrink-0 rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Icon name="x" size={16} /></button>
+              )}
+            </div>
+            <textarea value={t.body} onChange={(e) => upd(t.id, { body: e.target.value })} rows={7} className={`${inputCls} resize-y leading-relaxed`} />
+            <div className="mt-2"><VarChips vars={['cliente', 'asesor', 'folio', 'asunto']} onInsert={(v) => upd(t.id, { body: t.body + v })} /></div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-4 text-[11px] text-slate-400">Los cambios se guardan solos y se ven al instante en las páginas de los asesores.</p>
+    </section>
+  );
+}
+
+function Config(props) {
+  const [sub, setSub] = useState('reparto');
+  const Btn = ({ k, children }) => (
+    <button onClick={() => setSub(k)} className={`rounded-md px-3 py-1.5 font-medium transition ${sub === k ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{children}</button>
+  );
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="flex self-start rounded-lg bg-slate-200/70 p-0.5 text-sm">
+        <Btn k="reparto">Reparto y equipo</Btn><Btn k="auto">Respuesta automática</Btn><Btn k="plantillas">Plantillas</Btn>
+      </div>
+      {sub === 'reparto' && <ConfigReparto settings={props.settings} setSettings={props.setSettings} presence={props.presence} onPresence={props.onPresence} onMode={props.onMode} />}
+      {sub === 'auto' && <div className="scroll-thin min-h-0 flex-1 overflow-y-auto pr-1"><ConfigAuto autoReply={props.autoReply} setAutoReply={props.setAutoReply} /></div>}
+      {sub === 'plantillas' && <div className="scroll-thin min-h-0 flex-1 overflow-y-auto pr-1"><ConfigTemplates templates={props.templates} setTemplates={props.setTemplates} /></div>}
+    </div>
+  );
+}
+
 /* ---------- App ---------- */
 const STORE_KEY = 'tratocom-demo-v2';
+const CONFIG_KEY = 'tratocom-config-v1';
+const THEME_KEY = 'tratocom-theme';
 const DEFAULT_SETTINGS = { mode: 'pull', capacity: 1, order: 'priority', slaMin: 15 };
 const PAGE_VIEW = window.HELPDESK_VIEW === 'asesor' ? 'asesor' : 'supervisor';
 
@@ -869,16 +992,21 @@ function loadStore() {
     return d;
   } catch (_) { return null; }
 }
+function loadConfig() { try { return JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null'); } catch (_) { return null; } }
 function loadMe() { try { return sessionStorage.getItem('tratocom-me') || 'a3'; } catch (_) { return 'a3'; } }
 
 function App() {
   const view = PAGE_VIEW;
   const initial = useMemo(loadStore, []);
+  const cfg = useMemo(loadConfig, []);
   const [createdAt, setCreatedAt] = useState(() => (initial && initial.createdAt) || Date.now());
   const [emails, setEmails] = useState(() => (initial && initial.emails) || buildEmails());
   const [settings, setSettings] = useState(() => (initial && initial.settings) || DEFAULT_SETTINGS);
   const [presence, setPresence] = useState(() => (initial && initial.presence) || {});
   const [drafts, setDrafts] = useState(() => (initial && initial.drafts) || {});
+  const [templates, setTemplates] = useState(() => (cfg && cfg.templates) || DEFAULT_TEMPLATES);
+  const [autoReply, setAutoReply] = useState(() => (cfg && cfg.autoReply) || DEFAULT_AUTOREPLY);
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [meId, setMeIdState] = useState(loadMe);
   const [tab, setTab] = useState('bandeja');
   const [asesorTab, setAsesorTab] = useState('mine');
@@ -891,6 +1019,7 @@ function App() {
   const [poolIdx, setPoolIdx] = useState(0);
   const [now, setNow] = useState(Date.now());
   const skipPersist = useRef(false);
+  const skipCfg = useRef(false);
 
   const me = advisorById(meId);
   const mode = settings.mode;
@@ -910,17 +1039,35 @@ function App() {
     } catch (_) {}
   }, [createdAt, emails, settings, presence, drafts]);
   useEffect(() => {
+    if (skipCfg.current) { skipCfg.current = false; return; }
+    try {
+      const str = JSON.stringify({ templates, autoReply });
+      if (localStorage.getItem(CONFIG_KEY) !== str) localStorage.setItem(CONFIG_KEY, str);
+    } catch (_) {}
+  }, [templates, autoReply]);
+  useEffect(() => {
     const h = (ev) => {
-      if (ev.key !== STORE_KEY || !ev.newValue) return;
+      if (ev.key === THEME_KEY) { const on = ev.newValue === 'dark'; document.documentElement.classList.toggle('dark', on); setDark(on); return; }
+      if ((ev.key !== STORE_KEY && ev.key !== CONFIG_KEY) || !ev.newValue) return;
       try {
         const d = JSON.parse(ev.newValue);
-        skipPersist.current = true;
-        setCreatedAt(d.createdAt); setEmails(d.emails); setSettings(d.settings); setPresence(d.presence || {}); setDrafts(d.drafts || {});
+        if (ev.key === STORE_KEY) {
+          skipPersist.current = true;
+          setCreatedAt(d.createdAt); setEmails(d.emails); setSettings(d.settings); setPresence(d.presence || {}); setDrafts(d.drafts || {});
+        } else {
+          skipCfg.current = true;
+          setTemplates(d.templates || DEFAULT_TEMPLATES); setAutoReply(d.autoReply || DEFAULT_AUTOREPLY);
+        }
       } catch (_) {}
     };
     window.addEventListener('storage', h);
     return () => window.removeEventListener('storage', h);
   }, []);
+  const toggleTheme = () => {
+    const on = !document.documentElement.classList.contains('dark');
+    document.documentElement.classList.toggle('dark', on); setDark(on);
+    try { localStorage.setItem(THEME_KEY, on ? 'dark' : 'light'); } catch (_) {}
+  };
 
   // Motor automático
   useEffect(() => {
@@ -957,11 +1104,17 @@ function App() {
   const setMode = (m) => { setSettings(s => ({ ...s, mode: m })); flash(`Modo de reparto: ${MODES[m].label}`); };
   const simulateIncoming = () => {
     const [name, from, subject, priority] = NEW_EMAIL_POOL[poolIdx % NEW_EMAIL_POOL.length];
-    setEmails(prev => [{ id: Date.now(), name, from, subject, priority, attach: false, files: [], replies: [], status: 'unassigned', assignee: null,
-      receivedAt: Date.now(), assignedAt: null, firstReplyAt: null, resolvedAt: null,
-      body: 'Correo simulado recibido desde la cuenta compartida. En producción, este contenido lo trae la Cloud Function vía IMAP.' }, ...prev]);
+    const id = Date.now();
+    const mail = { id, name, from, subject, priority, attach: false, files: [], replies: [], status: 'unassigned', assignee: null,
+      receivedAt: id, assignedAt: null, firstReplyAt: null, resolvedAt: null,
+      body: 'Correo simulado recibido desde la cuenta compartida. En producción, este contenido lo trae la Cloud Function vía IMAP.' };
+    if (autoReply.enabled) {
+      const vars = { cliente: name, folio: folioOf(mail), asunto: subject };
+      mail.replies = [{ id: id + 1, author: 'Respuesta automática', auto: true, at: id, subject: renderTemplate(autoReply.subject, vars), body: renderTemplate(autoReply.body, vars), files: [] }];
+    }
+    setEmails(prev => [mail, ...prev]);
     setPoolIdx(i => i + 1);
-    flash('Nuevo correo recibido (simula la Cloud Function)');
+    flash(autoReply.enabled ? 'Nuevo correo recibido · acuse de recibo enviado' : 'Nuevo correo recibido (simula la Cloud Function)');
   };
   const resetDemo = () => {
     NOW0 = Date.now();
@@ -997,7 +1150,7 @@ function App() {
   const hasDraftOf = (id) => !!(drafts[id] && ((drafts[id].body || '').trim() || (drafts[id].files || []).length));
 
   const windowEl = opened && (
-    <EmailWindow key={opened.id} e={opened} now={now} view={view} mode={mode} meId={meId} capacity={settings.capacity} emails={emails} presence={presence}
+    <EmailWindow key={opened.id} e={opened} now={now} view={view} mode={mode} meId={meId} capacity={settings.capacity} emails={emails} presence={presence} templates={templates}
       authorName={view === 'asesor' ? me.name : 'Supervisor'} draft={drafts[opened.id]} onDraft={onDraft} onSend={sendReply} onFlash={flash}
       onAssign={assign} onRelease={release} onStatus={setStatus} onClose={() => setOpenId(null)} />
   );
@@ -1013,6 +1166,12 @@ function App() {
     <button onClick={onClick}
       className={`flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition ${active ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
       <Icon name={icon} size={15} />{children}
+    </button>
+  );
+  const ThemeBtn = (
+    <button onClick={toggleTheme} aria-label={dark ? 'Activar modo claro' : 'Activar modo oscuro'} title={dark ? 'Modo claro' : 'Modo oscuro'}
+      className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50">
+      <Icon name={dark ? 'sun' : 'moon'} size={16} />
     </button>
   );
   const Logo = (
@@ -1033,6 +1192,7 @@ function App() {
           {Logo}
           <Badge cls="bg-slate-900 text-white ring-slate-900"><Icon name="shield" size={12} />Supervisor</Badge>
           <div className="ml-auto flex flex-wrap items-center gap-3">
+            {ThemeBtn}
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-slate-500">Reparto:</span>
               <div className="flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs">
@@ -1098,7 +1258,7 @@ function App() {
             </section>
           )}
           {tab === 'metricas' && <Metrics emails={emails} now={now} settings={settings} presence={presence} onOpen={openFromMetrics} flash={flash} />}
-          {tab === 'config' && <Config settings={settings} setSettings={setSettings} presence={presence} onPresence={setPresenceOf} onMode={setMode} />}
+          {tab === 'config' && <Config settings={settings} setSettings={setSettings} presence={presence} onPresence={setPresenceOf} onMode={setMode} templates={templates} setTemplates={setTemplates} autoReply={autoReply} setAutoReply={setAutoReply} />}
         </main>
 
         {windowEl}
@@ -1114,7 +1274,9 @@ function App() {
       <header className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-5 py-2.5">
         {Logo}
         <Badge cls="bg-sky-600 text-white ring-sky-600"><Icon name="user" size={12} />Asesor</Badge>
-        <label className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+        <div className="ml-auto flex items-center gap-3">
+        {ThemeBtn}
+        <label className="flex items-center gap-2 text-xs text-slate-500">
           Entrar como
           <Avatar advisor={me} size="h-7 w-7 text-[11px]" />
           <select value={meId} onChange={(e) => { setMeId(e.target.value); setOpenId(null); }}
@@ -1122,6 +1284,7 @@ function App() {
             {ADVISORS.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </label>
+        </div>
       </header>
 
       <main className="mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 flex-col gap-4 p-5">

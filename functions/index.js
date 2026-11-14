@@ -10,10 +10,22 @@ const logger = require('firebase-functions/logger');
 const admin = require('firebase-admin');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
+const { createTransporter, shouldAutoReply, sendAutoReply } = require('./autoReply');
 
 admin.initializeApp();
 const db = admin.firestore();
 const bucket = () => admin.storage().bucket();
+
+// Folio consecutivo: TC-000001, TC-000002, ...
+async function nextFolio() {
+  const ref = db.doc('counters/folio');
+  const n = await db.runTransaction(async (tx) => {
+    const v = ((await tx.get(ref)).data()?.value || 0) + 1;
+    tx.set(ref, { value: v });
+    return v;
+  });
+  return 'TC-' + String(n).padStart(6, '0');
+}
 
 // Secretos (se guardan con: firebase functions:secrets:set IMAP_USER, etc.)
 const IMAP_USER = defineSecret('IMAP_USER');
@@ -43,6 +55,10 @@ exports.fetchEmails = onSchedule(
     });
 
     let saved = 0;
+
+    // Respuesta automática (la configura el supervisor en settings/autoReply)
+    const autoSettings = (await db.doc('settings/autoReply').get()).data() || {};
+    const transporter = autoSettings.enabled ? createTransporter(IMAP_USER.value(), IMAP_PASS.value()) : null;
 
     try {
       await client.connect();
@@ -74,9 +90,14 @@ exports.fetchEmails = onSchedule(
             files.push({ name: safeName, size: att.size, contentType: att.contentType, path: filePath });
           }
 
-          await db.collection('incoming_emails').doc(docId).set(
-            {
-              messageId,
+          const ref = db.collection('incoming_emails').doc(docId);
+          if ((await ref.get()).exists) { // ya estaba guardado (reintento): solo marcarlo leído
+            await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+            continue;
+          }
+          const folio = await nextFolio();
+          const record = {
+            messageId,
               imapUid: uid,
               from: fromObj.address || '',
               fromName: fromObj.name || fromObj.address || 'Desconocido',
@@ -95,9 +116,17 @@ exports.fetchEmails = onSchedule(
               status: 'unassigned',
               assignedTo: null,
               createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            },
-            { merge: false }
-          );
+          };
+          record.folio = folio;
+          await ref.set(record, { merge: false });
+
+          // 3b) Acuse de recibo automático (si el supervisor lo activó)
+          if (transporter && shouldAutoReply(parsed, record.from, IMAP_USER.value())) {
+            try {
+              await sendAutoReply({ db, transporter, ownAddress: IMAP_USER.value(), settings: autoSettings, mailRef: ref, mail: { ...record, messageId } });
+            } catch (e) { console.error('Auto-reply falló (el correo ya está guardado):', e.message); }
+          }
+
 
           // 4) Solo si se guardó bien, marcarlo como LEÍDO en Outlook
           await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });

@@ -37,3 +37,9 @@ No subir contraseñas al repo: viven como secretos de Firebase.
 ## Demo en GitHub Pages
 Settings → Pages → rama `main`, carpeta `/ (root)`. `index.html` es la página de inicio. El archivo `CNAME` ya apunta a `tratocom.godsplan.site`
 (en el DNS: registro CNAME `tratocom` → `blqa.github.io`).
+
+## Plantillas y respuesta automática
+El supervisor las edita en **Configuración → Plantillas / Respuesta automática**. Con Firestore conectado se guardan en `settings/templates` y `settings/autoReply` (`{enabled, subject, body}`); la Cloud Function `fetchEmails` envía el acuse de recibo con `functions/autoReply.js` (sin responder a no-reply, listas ni correos automáticos; máx. 1 por remitente/hora) y asigna folios `TC-000001…`.
+
+## Modo oscuro
+Botón sol/luna en cada página. Tras cambiar clases en `src/app.jsx` ejecuta `./build.sh` (compila y regenera `dark.css`).

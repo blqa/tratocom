@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supervisor · Helpdesk Telcel Trato Compartido / Pyme</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<style>
+  body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  .scroll-thin::-webkit-scrollbar { width: 8px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 8px; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px);} to { opacity: 1; transform: none; } }
+  .pop { animation: pop .25s ease-out; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+<div id="root"></div>
+<script>window.HELPDESK_VIEW = 'supervisor';</script>
+<script src="app.js"></script>
+</body>
+</html>

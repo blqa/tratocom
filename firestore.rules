@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Requiere custom claim "role": 'supervisor' | 'advisor' en cada usuario
+    function isSupervisor() { return request.auth != null && request.auth.token.role == 'supervisor'; }
+    function isAdvisor()    { return request.auth != null && request.auth.token.role == 'advisor'; }
+    function mode() { return get(/databases/$(database)/documents/settings/distribution).data.mode; }
+
+    // Configuración de reparto: todos leen, solo el supervisor cambia
+    match /settings/{doc} {
+      allow read: if request.auth != null;
+      allow write: if isSupervisor();
+    }
+
+    // Asesores: todos leen; supervisor edita todo; cada asesor solo su propia pausa
+    match /advisors/{id} {
+      allow read: if request.auth != null;
+      allow write: if isSupervisor();
+      allow update: if isAdvisor() && request.auth.uid == id
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['available']);
+    }
+
+    match /incoming_emails/{id} {
+      // El asesor SOLO lee lo suyo; la bandeja general solo en modo "pull"
+      allow read: if isSupervisor()
+                  || (isAdvisor() && (resource.data.assignedTo == request.auth.uid
+                      || (resource.data.status == 'unassigned' && mode() == 'pull')));
+
+      allow update: if isSupervisor()
+                    // asesor cambiando el estado de su propio caso
+                    || (isAdvisor() && resource.data.assignedTo == request.auth.uid
+                        && request.resource.data.assignedTo == request.auth.uid)
+                    // asesor tomando un caso libre (solo modo pull)
+                    || (isAdvisor() && mode() == 'pull' && resource.data.status == 'unassigned'
+                        && request.resource.data.assignedTo == request.auth.uid
+                        && request.resource.data.status == 'assigned');
+
+      allow create, delete: if false; // solo la Cloud Function (Admin SDK) crea correos
+
+      // Respuestas enviadas: las ve quien ve el correo; solo la Cloud Function las crea
+      match /replies/{rid} {
+        allow read: if isSupervisor()
+                    || (isAdvisor() && get(/databases/$(database)/documents/incoming_emails/$(id)).data.assignedTo == request.auth.uid);
+        allow write: if false;
+      }
+    }
+  }
+}

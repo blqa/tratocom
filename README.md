@@ -35,7 +35,7 @@ Cada usuario necesita el *custom claim* `role` = `supervisor` o `advisor`.
 No subir contraseñas al repo: viven como secretos de Firebase.
 
 ## Demo en GitHub Pages
-Settings → Pages → rama `main`, carpeta `/ (root)`. `index.html` es la página de inicio. El archivo `CNAME` ya apunta a `tratocom.godsplan.site`
+Settings → Pages → rama `main`, carpeta `/ (root)`. `index.html` es la página de inicio. El archivo `CNAME` ya apunta a `tratocom.godsplan.dev`
 (en el DNS: registro CNAME `tratocom` → `blqa.github.io`).
 
 ## Plantillas y respuesta automática
